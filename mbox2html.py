@@ -1,5 +1,7 @@
 import mailbox
-import email, email.policy, email.utils
+import email
+import email.policy
+import email.utils
 import html
 import urllib.parse
 import chardet
@@ -11,7 +13,7 @@ import os
 import shutil
 import math
 import argparse
-
+import uuid
 
 def flatten(l):
     for i in l:
@@ -27,8 +29,7 @@ def format_date(msg, listing=False):
     try:
         date = email.utils.parsedate_to_datetime(msg_date)
         if listing:
-            date_format = "%Y %d. %B %A"
-            return date.strftime(date_format)
+            return date.isoformat()
         else:
             return email.utils.format_datetime(date)
     except ValueError:
@@ -46,13 +47,16 @@ def get_header_text(msg, item, default="utf-8"):
             try:
                 encoding = chardet.detect(text)["encoding"]
                 header_section = text.decode(encoding)
-            except:
+            except Exception:
                 header_section = text
         else:
             try:
                 header_section = text.decode(charset)
-            except:
-                header_section = text.decode(default)
+            except Exception:
+                header_section = text.decode(
+                    default,
+                    errors="backslashreplace"
+                )
         if header_section:
             header_sections.append(header_section)
     return " ".join(header_sections)
@@ -64,7 +68,9 @@ def get_payload_text(msg):
     if payload is None:
         return ""
     charset = msg.get_charset() or chardet.detect(payload)["encoding"]
-    content = payload.decode(charset or "utf-8")
+
+    content = payload.decode(charset or "utf-8",  errors="backslashreplace")
+
     if subtype == "plain":
         return html.escape(content).replace("\n", "<br>")
     else:
@@ -79,10 +85,26 @@ def payload_get_type(payload, types, type_list):
 
 
 def parse_email(msg):
-    content_type = msg.get_content_type()
-    maintype = msg.get_content_maintype()
-    subtype = msg.get_content_subtype()
-    payload = msg.get_payload()
+    try:
+        content_type = msg.get_content_type()
+    except Exception:
+        content_type = "text/plain"
+    try:
+        maintype = msg.get_content_maintype()
+    except Exception:
+        maintype = "text"
+
+    try:
+        subtype = msg.get_content_subtype()
+    except Exception:
+        subtype = None
+        pass
+
+    try:
+        payload = msg.get_payload()
+    except Exception:
+        return
+
     if maintype == "text":
         return [
             {
@@ -94,18 +116,21 @@ def parse_email(msg):
     elif maintype == "multipart":
         if subtype == "alternative":
             # TODO: Can this contain non-text?
-            types = [m.get_content_type() for m in payload]
-            if args.mode == "plain":
-                type_list = ["text/plain"]
-            else:
-                type_list = ["text/html", "text/plain"]
-            return [
-                {
-                    "name": msg.get_filename(),
-                    "content": payload_get_type(payload, types, type_list),
-                    "type": "text",
-                }
-            ]
+            try:
+                types = [m.get_content_type() for m in payload]
+                if args.mode == "plain":
+                    type_list = ["text/plain"]
+                else:
+                    type_list = ["text/html", "text/plain"]
+                return [
+                    {
+                        "name": msg.get_filename(),
+                        "content": payload_get_type(payload, types, type_list),
+                        "type": "text",
+                    }
+                ]
+            except:
+                pass
         else:
             return list(flatten([parse_email(p) for p in payload]))
     elif content_type == "message/rfc822":
@@ -258,21 +283,26 @@ def content_to_html(msg, content, threads, messages, outdir, body_path):
             name = msg_id + ".html"
             filepath = body_path
             # hr to distinguish content
-            part["content"] = "<hr>" + part["content"]
+            if part["content"]:
+                try:
+                    part["content"] = "<hr>" + part["content"]
+                except Exception:
+                    pass
         # For attachments, just create the director if needed
         else:
             os.makedirs(attachment_path, exist_ok=True)
             filepath = os.path.join(attachment_path, name)
             attachments.append({"name": name, "path": filepath})
 
-        if part["type"] == "text":
-            # TODO: Attempt to detect encoding?
-            try:
-                open(filepath, "a").write(part["content"])
-            except UnicodeEncodeError:
-                open(filepath, "a", encoding="utf8").write(part["content"])
-        else:
-            open(filepath, "ab").write(part["content"])
+        if part["content"]:
+            if part["type"] == "text":
+                # TODO: Attempt to detect encoding?
+                try:
+                    open(filepath, "a").write(part["content"])
+                except UnicodeEncodeError:
+                    open(filepath, "a", encoding="utf8").write(part["content"])
+            else:
+                open(filepath, "ab").write(part["content"])
 
     # Finishes body/writes footer info
     with open(body_path, "a") as file:
@@ -393,7 +423,10 @@ if __name__ == "__main__":
 
     mbox = mailbox.mbox(filename)
     messages = {}
+
+    print(f"Processing {filename}")
     for key, msg in mbox.items():
+        print(msg.get("message-id"))
         to = msg.get("to") or msg.get("delivered-to") or ""
         cc = msg.get("cc") or ""
         rto = msg.get("reply-to") or ""
@@ -419,7 +452,10 @@ if __name__ == "__main__":
 
     # Writes email html files
     for key, msg in messages.items():
-        msg_id = msg.get("message-id")
+        if msg.get("message-id"):
+            msg_id = msg.get("message-id")
+        else:
+            msg_id = str(uuid.uuid4())
         body_path = os.path.join(outdir, msg_id.replace("/", "-") + ".html")
         attachment_path = os.path.join(outdir, msg_id.replace("/", "-"))
 
