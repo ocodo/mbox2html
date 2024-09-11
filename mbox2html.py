@@ -39,7 +39,10 @@ def format_date(msg, listing=False):
 # Helps extracting tricky header info (at times needed for Subject and From)
 def get_header_text(msg, item, default="utf-8"):
     header_text = msg.get(item)
-    headers = email.header.decode_header(header_text)
+    try:
+        headers = email.header.decode_header(header_text)
+    except Exception:
+        return
 
     header_sections = []
     for text, charset in headers:
